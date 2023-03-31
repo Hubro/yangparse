@@ -1,8 +1,11 @@
 #![allow(dead_code, unused_variables)]
-// Simple lexer to break up a stream if characters into a small set of tokens for further
+//
+// Simple lexer to break up a stream of characters into a small set of tokens for further
 // processing:
 //
 // - String: Any single- or double quoted string
+// - Date: NNNN-NN-NN
+// - Number: Any "integer-value" or "decimal-value" from the ABNF grammar
 // - Comment: Any single-line comment or block comment
 // - OpenCurlyBrace
 // - ClosingCurlyBrace
