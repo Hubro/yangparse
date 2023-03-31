@@ -13,7 +13,7 @@
 use regex::Regex;
 
 lazy_static! {
-    static ref IS_NUMBER: Regex = Regex::new(r"^(\+|\-)?[1-9]\d*(\.\d+)?$").unwrap();
+    static ref IS_NUMBER: Regex = Regex::new(r"^\-?(0|([1-9]\d*(\.\d+)?))$").unwrap();
 }
 
 #[derive(Debug, PartialEq)]
@@ -418,12 +418,14 @@ mod test {
                     // I'm a comment!
                 }
 
+                number 0;
                 number 123;
-                number +123;
                 number -123;
                 number 123.12345;
-                number +123.12345;
                 number -123.12345;
+
+                not-number 0123;
+                not-number abc123;
 
                 /* I'm a multi-line comment */
 
@@ -454,26 +456,29 @@ mod test {
                 Comment              131 -> 147      "// I'm a comment!"
                 ClosingCurlyBrace    153 -> 153      "}"
                 Other                160 -> 165      "number"
-                Number               167 -> 169      "123"
-                SemiColon            170 -> 170      ";"
-                Other                176 -> 181      "number"
-                Number               183 -> 186      "+123"
-                SemiColon            187 -> 187      ";"
-                Other                193 -> 198      "number"
-                Number               200 -> 203      "-123"
-                SemiColon            204 -> 204      ";"
-                Other                210 -> 215      "number"
-                Number               217 -> 225      "123.12345"
-                SemiColon            226 -> 226      ";"
-                Other                232 -> 237      "number"
-                Number               239 -> 248      "+123.12345"
-                SemiColon            249 -> 249      ";"
-                Other                255 -> 260      "number"
-                Number               262 -> 271      "-123.12345"
-                SemiColon            272 -> 272      ";"
-                Comment              279 -> 308      "/* I'm a multi-line comment */"
-                Comment              315 -> 369      "/*\n     * I'm a weird multi-line comment thingy\n     */"
-                ClosingCurlyBrace    371 -> 371      "}"
+                Number               167 -> 167      "0"
+                SemiColon            168 -> 168      ";"
+                Other                174 -> 179      "number"
+                Number               181 -> 183      "123"
+                SemiColon            184 -> 184      ";"
+                Other                190 -> 195      "number"
+                Number               197 -> 200      "-123"
+                SemiColon            201 -> 201      ";"
+                Other                207 -> 212      "number"
+                Number               214 -> 222      "123.12345"
+                SemiColon            223 -> 223      ";"
+                Other                229 -> 234      "number"
+                Number               236 -> 245      "-123.12345"
+                SemiColon            246 -> 246      ";"
+                Other                253 -> 262      "not-number"
+                Other                264 -> 267      "0123"
+                SemiColon            268 -> 268      ";"
+                Other                274 -> 283      "not-number"
+                Other                285 -> 290      "abc123"
+                SemiColon            291 -> 291      ";"
+                Comment              298 -> 327      "/* I'm a multi-line comment */"
+                Comment              334 -> 388      "/*\n     * I'm a weird multi-line comment thingy\n     */"
+                ClosingCurlyBrace    390 -> 390      "}"
                 "#
             ),
         );
