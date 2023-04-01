@@ -13,10 +13,27 @@
 // - Other: Any other token, including keywords, numbers, booleans and unquoted strings
 //
 
+use std::str;
+
 use regex::Regex;
 
+const TAB: u8 = 9;
+const NEWLINE: u8 = 10;
+const CARRIAGE_RETURN: u8 = 10;
+const SPACE: u8 = 32;
+const DOUBLE_QUOTE: u8 = 34;
+const SINGLE_QUOTE: u8 = 39;
+const ASTERISK: u8 = 42;
+const DASH: u8 = 45;
+const SLASH: u8 = 47;
+const SEMICOLON: u8 = 59;
+const BACKSLASH: u8 = 92;
+const LEFT_CURLY_BRACKET: u8 = 123;
+const RIGHT_CURLY_BRACKET: u8 = 125;
+
 lazy_static! {
-    static ref IS_NUMBER: Regex = Regex::new(r"^\-?(0|([1-9]\d*(\.\d+)?))$").unwrap();
+    static ref NUMBER_PATTERN: Regex = Regex::new(r"^\-?(0|([1-9]\d*(\.\d+)?))$").unwrap();
+    static ref DATE_PATTERN: Regex = Regex::new(r"^\d{4}\-\d{2}\-\d{2}$").unwrap();
 }
 
 #[derive(Debug, PartialEq)]
@@ -32,28 +49,35 @@ pub enum TokenType {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Token {
+pub struct Token<'a> {
     pub token_type: TokenType,
     pub span: (usize, usize),
-    pub text: String,
+    pub text: &'a str,
 }
 
 pub trait HumanReadableTokensExt {
     fn human_readable_string(&self) -> String;
 }
 
-impl HumanReadableTokensExt for Vec<Token> {
+impl HumanReadableTokensExt for Token<'_> {
+    /// Format the tokens into a nice, human readable string for troubleshooting purposes
+    fn human_readable_string(&self) -> String {
+        format!(
+            "{:<20} {:<15} {:?}\n",
+            format!("{:?}", self.token_type),
+            format!("{} -> {}", self.span.0, self.span.1),
+            self.text,
+        )
+    }
+}
+
+impl HumanReadableTokensExt for Vec<Token<'_>> {
     /// Format the tokens into a nice, human readable string for troubleshooting purposes
     fn human_readable_string(&self) -> String {
         let mut output = String::new();
 
         for token in self {
-            output.push_str(&format!(
-                "{:<20} {:<15} {:?}\n",
-                format!("{:?}", token.token_type),
-                format!("{} -> {}", token.span.0, token.span.1),
-                token.text,
-            ))
+            output.push_str(&token.human_readable_string());
         }
 
         return output;
@@ -67,7 +91,7 @@ pub struct TextPosition {
 }
 
 impl TextPosition {
-    fn from_buffer_index(buffer: &Vec<char>, index: usize) -> Self {
+    fn from_buffer_index(buffer: &Vec<u8>, index: usize) -> Self {
         let mut line = 1;
         let mut col = 1;
 
@@ -76,7 +100,7 @@ impl TextPosition {
                 break;
             }
 
-            if *c == '\n' {
+            if *c == NEWLINE {
                 line += 1;
                 col = 1;
             } else {
@@ -94,125 +118,267 @@ impl core::fmt::Display for TextPosition {
     }
 }
 
-pub fn scan(text: &str) -> Result<Vec<Token>, String> {
-    let buffer = Vec::from_iter(text.chars());
-    let buffer_size = buffer.len();
-    let mut cursor = 0;
-    let mut tokens: Vec<Token> = vec![];
+pub struct Scanner<'a> {
+    /// The buffer that the file is read into. All strings in yielded tokens reference the memory
+    /// in this buffer, which prevents thousands of tiny allocations.
+    buffer: &'a Vec<u8>,
 
-    loop {
-        if cursor == buffer_size {
-            break;
-        }
+    /// The current position in the source file, assuming we started at 0
+    cursor: std::cell::Cell<usize>,
+}
 
-        // Quick boundary check, since I'm not perfect
-        if cursor > buffer_size {
-            panic!("Oops, we've read too far!");
-        }
-
-        let char = buffer[cursor];
-
-        macro_rules! push_char_token {
-            ($type:expr, $char:expr) => {
-                tokens.push(Token {
-                    token_type: $type,
-                    span: (cursor, cursor),
-                    text: $char.to_string(),
-                });
-                cursor += 1;
-            };
-        }
-
-        macro_rules! push_token {
-            ($type:expr, $text:expr) => {
-                let text_length = $text.len();
-
-                tokens.push(Token {
-                    token_type: $type,
-                    span: (cursor, cursor + text_length - 1),
-                    text: $text,
-                });
-
-                cursor += text_length;
-            };
-        }
-
-        if let Some(length) = read_whitespace(&buffer, cursor) {
-            cursor += length; // Ignore whitespace
-        } else if let Some(length) = read_line_break(&buffer, cursor) {
-            cursor += length; // Ignore line breaks
-        } else if char == '{' {
-            push_char_token!(TokenType::OpenCurlyBrace, '{');
-        } else if char == '}' {
-            push_char_token!(TokenType::ClosingCurlyBrace, '}');
-        } else if char == ';' {
-            push_char_token!(TokenType::SemiColon, ';');
-        } else if let Some(string) = read_string(&buffer, cursor)? {
-            push_token!(TokenType::String, string);
-        } else if let Some(comment) = read_single_line_comment(&buffer, cursor) {
-            push_token!(TokenType::Comment, comment);
-        } else if let Some(comment) = read_block_comment(&buffer, cursor)? {
-            push_token!(TokenType::Comment, comment);
-        } else if let Some(date) = read_date(&buffer, cursor) {
-            push_token!(TokenType::Date, date);
-        } else if let Some(text) = read_other(&buffer, cursor) {
-            if IS_NUMBER.is_match(&text) {
-                push_token!(TokenType::Number, text);
-            } else {
-                push_token!(TokenType::Other, text);
-            }
-        } else {
-            return Err(format!("Failed to parse input at position: {}", cursor));
+impl Scanner<'_> {
+    pub fn new<'a>(buffer: &'a Vec<u8>) -> Scanner<'a> {
+        Scanner {
+            buffer,
+            cursor: 0.into(),
         }
     }
 
-    return Ok(tokens);
+    pub fn iter(&self) -> ScannerIterator {
+        ScannerIterator { scanner: self }
+    }
+
+    /// Reads the next token from the buffer, returns None on EOF
+    ///
+    /// Returns an error on lexer errors such as unterminated strings or comments.
+    ///
+    fn next_token(&self) -> Result<Option<Token>, String> {
+        self.skip_whitespace();
+
+        let char = match self.buffer.get(self.cursor.get()) {
+            Some(char) => char,
+            None => return Ok(None),
+        };
+
+        macro_rules! get_str {
+            ($length:expr) => {
+                str::from_utf8(
+                    self.buffer
+                        .get(self.cursor.get()..self.cursor.get() + $length)
+                        .unwrap(),
+                )
+                .map_err(|err| format!("{}", err))?
+            };
+        }
+
+        macro_rules! read_token {
+            ($token_type:expr, $length:expr) => {{
+                let token = Token {
+                    token_type: $token_type,
+                    span: (self.cursor.get(), self.cursor.get() + $length - 1),
+                    text: get_str!($length),
+                };
+
+                self.cursor.set(self.cursor.get() + $length);
+
+                Ok(Some(token))
+            }};
+        }
+
+        if *char == SEMICOLON {
+            return read_token!(TokenType::SemiColon, 1);
+        } else if *char == LEFT_CURLY_BRACKET {
+            return read_token!(TokenType::OpenCurlyBrace, 1);
+        } else if *char == RIGHT_CURLY_BRACKET {
+            return read_token!(TokenType::ClosingCurlyBrace, 1);
+        } else if let Some(string_length) = self.scan_string()? {
+            return read_token!(TokenType::String, string_length);
+        } else if let Some(comment_length) = self.scan_comment() {
+            return read_token!(TokenType::Comment, comment_length);
+        } else if let Some(comment_length) = self.scan_block_comment()? {
+            return read_token!(TokenType::Comment, comment_length);
+        } else if let Some(token_length) = self.scan_other() {
+            let str = get_str!(token_length);
+
+            if NUMBER_PATTERN.is_match(str) {
+                return read_token!(TokenType::Number, token_length);
+            } else if DATE_PATTERN.is_match(str) {
+                return read_token!(TokenType::Date, token_length);
+            } else {
+                return read_token!(TokenType::Other, token_length);
+            }
+        } else {
+            return Err(format!(
+                "Unexpected character at position {}: {:?}",
+                self.cursor.get(),
+                char
+            ));
+        }
+    }
+
+    fn scan_line_break(&self, start: usize) -> Option<usize> {
+        if let Some(first_char) = self.buffer.get(start) {
+            if *first_char == NEWLINE {
+                return Some(1);
+            } else if *first_char == CARRIAGE_RETURN // \r
+                && self
+                    .buffer
+                    .get(start + 1)
+                    .map_or(false, |next_char| *next_char == NEWLINE)
+            {
+                return Some(2);
+            }
+        }
+
+        None
+    }
+
+    /// Checks if there is a string at the current position
+    ///
+    /// Returns Ok(Some(string_length)) if there is a string at the current position, Ok(None) if
+    /// there isn't. Returns an error if the string is never terminated.
+    ///
+    fn scan_string(&self) -> Result<Option<usize>, String> {
+        let start = self.cursor.get();
+
+        let quote_char = match self.buffer[self.cursor.get()] {
+            DOUBLE_QUOTE => DOUBLE_QUOTE,
+            SINGLE_QUOTE => SINGLE_QUOTE,
+            _ => return Ok(None), // This position doesn't start a string, exit early
+        };
+
+        let mut prev_char: Option<&u8> = None;
+
+        let mut i = start + 1;
+
+        loop {
+            if let Some(char) = self.buffer.get(i) {
+                let prev_char_is_backslash = match prev_char {
+                    Some(x) => *x == BACKSLASH,
+                    None => false,
+                };
+
+                // If the string is closed, we're done!
+                if *char == quote_char && !prev_char_is_backslash {
+                    return Ok(Some(i + 1 - start));
+                }
+
+                prev_char = Some(char);
+            } else {
+                return Err(format!(
+                    "Unexpected end of input, string started at {} was never terminated",
+                    TextPosition::from_buffer_index(self.buffer, start),
+                ));
+            }
+
+            i += 1;
+        }
+    }
+
+    /// Checks if there is a single-line comment at the current position
+    fn scan_comment(&self) -> Option<usize> {
+        let start = self.cursor.get();
+
+        let is_forward_slash = |c: &u8| *c == SLASH;
+
+        if !(self.buffer.get(start).map_or(false, is_forward_slash)
+            && self.buffer.get(start + 1).map_or(false, is_forward_slash))
+        {
+            return None;
+        }
+
+        let mut length = 2;
+
+        for i in start + 2.. {
+            // Single-line comments last until the next line break or the end of the buffer
+            if self.scan_line_break(i).is_some() || i == self.buffer.len() {
+                break;
+            }
+
+            length += 1;
+        }
+
+        Some(length)
+    }
+
+    /// Checks if there is a block comment at the current position
+    fn scan_block_comment(&self) -> Result<Option<usize>, String> {
+        let start = self.cursor.get();
+
+        if !(self.buffer.get(start).map_or(false, |c| *c == SLASH)
+            && self.buffer.get(start + 1).map_or(false, |c| *c == ASTERISK))
+        {
+            return Ok(None);
+        }
+
+        let mut length = 4;
+
+        for i in start + 2.. {
+            if i == self.buffer.len() {
+                return Err(format!(
+                    "Unexpected end of input, block comment started at {} was never terminated",
+                    TextPosition::from_buffer_index(self.buffer, start)
+                ));
+            }
+
+            if self.buffer.get(i).map_or(false, |c| *c == ASTERISK)
+                && self.buffer.get(i + 1).map_or(false, |c| *c == SLASH)
+            {
+                break;
+            }
+
+            length += 1;
+        }
+
+        Ok(Some(length))
+    }
+
+    fn scan_other(&self) -> Option<usize> {
+        let start = self.cursor.get();
+        let mut i = start;
+
+        loop {
+            if let Some(char) = self.buffer.get(i) {
+                if is_delimiter(char) {
+                    break;
+                }
+            } else {
+                break; // End of input
+            }
+
+            i += 1;
+        }
+
+        return if i > start { Some(i - start) } else { None };
+    }
+
+    /// Reads until a non-whitespace character is found
+    fn skip_whitespace(&self) {
+        while let Some(char) = self.buffer.get(self.cursor.get()) {
+            if [SPACE, TAB, CARRIAGE_RETURN, NEWLINE].contains(char) {
+                self.cursor.set(self.cursor.get() + 1);
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+pub struct ScannerIterator<'a> {
+    scanner: &'a Scanner<'a>,
+}
+
+impl<'a> Iterator for ScannerIterator<'a> {
+    type Item = Token<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.scanner.next_token().unwrap()
+    }
 }
 
 /// Returns true if this character should delimit a token
-fn is_delimiter(c: &char) -> bool {
-    [' ', '\t', '\r', '\n', ';', '{', '}'].contains(c)
-}
-
-/// Tries to read whitespace from the given start position
-///
-/// Returns the number of whitespace characters that was found.
-///
-fn read_whitespace(buffer: &Vec<char>, start: usize) -> Option<usize> {
-    let mut count: usize = 0;
-
-    for i in start.. {
-        if buffer
-            .get(i)
-            .map_or(false, |char| [' ', '\t'].contains(char))
-        {
-            count += 1;
-        } else {
-            break;
-        }
-    }
-
-    return if count > 0 { Some(count) } else { None };
-}
-
-/// Tries to read a line break at the given start position
-///
-/// Returns the number of characters (1 or 2) or None if no line break was found.
-///
-fn read_line_break(buffer: &Vec<char>, start: usize) -> Option<usize> {
-    if let Some(first_char) = buffer.get(start) {
-        if *first_char == '\n' {
-            return Some(1);
-        } else if *first_char == '\r'
-            && buffer
-                .get(start + 1)
-                .map_or(false, |next_char| *next_char == '\n')
-        {
-            return Some(2);
-        }
-    }
-
-    None
+fn is_delimiter(c: &u8) -> bool {
+    [
+        SPACE,
+        TAB,
+        CARRIAGE_RETURN,
+        NEWLINE,
+        SEMICOLON,
+        LEFT_CURLY_BRACKET,
+        RIGHT_CURLY_BRACKET,
+    ]
+    .contains(c)
 }
 
 // /// Returns true if this is a valid YANG character
@@ -244,165 +410,6 @@ fn read_line_break(buffer: &Vec<char>, start: usize) -> Option<usize> {
 //         || (0x100000..=0x10FFFD).contains(&ord);
 // }
 
-/// Tries to read a string from the cursor position in the buffer
-///
-/// Returns an error if the position contains a string, but it's never closed.
-/// Returns None if there is no string at the given position.
-/// Otherwise returns the string as a String, with the string's quotes included.
-///
-/// The initial cursor position is assumed to be a valid buffer index.
-///
-fn read_string(buffer: &Vec<char>, start: usize) -> Result<Option<String>, String> {
-    let quote_char = match buffer[start] {
-        '"' => '"',
-        '\'' => '\'',
-        _ => return Ok(None), // This position doesn't start a string, exit early
-    };
-
-    let mut string = String::from(quote_char);
-    let mut prev_char: Option<&char> = None;
-    let mut cursor = start + 1;
-
-    loop {
-        if let Some(curr_char) = buffer.get(cursor) {
-            string.push(*curr_char);
-
-            let prev_char_is_backslash = match prev_char {
-                Some(x) => *x == '\\',
-                None => false,
-            };
-
-            // If the string is closed, we're done!
-            if *curr_char == quote_char && !prev_char_is_backslash {
-                return Ok(Some(string));
-            }
-
-            prev_char = Some(curr_char);
-        } else {
-            return Err(format!(
-                "Unexpected end of input, string started at {} was never terminated",
-                TextPosition::from_buffer_index(buffer, start),
-            ));
-        }
-
-        cursor += 1;
-    }
-}
-
-fn read_single_line_comment(buffer: &Vec<char>, start: usize) -> Option<String> {
-    let is_forward_slash = |c: &char| *c == '/';
-
-    if !(buffer.get(start).map_or(false, is_forward_slash)
-        && buffer.get(start + 1).map_or(false, is_forward_slash))
-    {
-        return None;
-    }
-
-    let mut length = 2;
-
-    for i in start + 2.. {
-        // Single-line comments last until the next line break or the end of the buffer
-        if read_line_break(buffer, i).is_some() || i == buffer.len() {
-            break;
-        }
-
-        length += 1;
-    }
-
-    Some(String::from_iter(
-        buffer
-            .get(start..start + length)
-            .expect("The bounds have already been checked"),
-    ))
-}
-
-/// Tries to read a block comment at the given position
-///
-/// Returns the comment as a string if it was successfully read. Returns None if there was no
-/// multi-line string at the position. Returns an error if the multi-line comment was opened but
-/// never closed.
-///
-fn read_block_comment(buffer: &Vec<char>, start: usize) -> Result<Option<String>, String> {
-    if !(buffer.get(start).map_or(false, |c| *c == '/')
-        && buffer.get(start + 1).map_or(false, |c| *c == '*'))
-    {
-        return Ok(None);
-    }
-
-    let mut length = 4;
-
-    for i in start + 2.. {
-        if i == buffer.len() {
-            return Err(format!(
-                "Unexpected end of input, block comment started at {} was never terminated",
-                TextPosition::from_buffer_index(buffer, start)
-            ));
-        }
-
-        if buffer.get(i).map_or(false, |c| *c == '*')
-            && buffer.get(i + 1).map_or(false, |c| *c == '/')
-        {
-            break;
-        }
-
-        length += 1;
-    }
-
-    Ok(Some(String::from_iter(
-        buffer
-            .get(start..start + length)
-            .expect("The bounds have already been checked"),
-    )))
-}
-
-/// Tries to read any token from the given position
-///
-/// This means any chunk of text up until a delimiter.
-///
-/// The initial cursor position is assumed to be a valid buffer index.
-///
-fn read_other(buffer: &Vec<char>, cursor: usize) -> Option<String> {
-    let mut string = String::new();
-    let mut cursor = cursor;
-
-    loop {
-        if let Some(char) = buffer.get(cursor) {
-            if is_delimiter(char) {
-                break;
-            }
-
-            string.push(*char);
-        } else {
-            break; // End of input
-        }
-
-        cursor += 1;
-    }
-
-    return if string.len() > 0 { Some(string) } else { None };
-}
-
-/// Tries to read a date at the given position in the buffer
-fn read_date(buffer: &Vec<char>, cursor: usize) -> Option<String> {
-    if let Some(chunk) = buffer.get(cursor..cursor + 10) {
-        if chunk[0].is_numeric()
-            && chunk[1].is_numeric()
-            && chunk[2].is_numeric()
-            && chunk[3].is_numeric()
-            && chunk[4] == '-'
-            && chunk[5].is_numeric()
-            && chunk[6].is_numeric()
-            && chunk[7] == '-'
-            && chunk[8].is_numeric()
-            && chunk[9].is_numeric()
-        {
-            return Some(String::from_iter(chunk));
-        }
-    }
-
-    return None;
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -411,37 +418,40 @@ mod test {
 
     #[test]
     fn test_scan() {
-        let result = scan(&dedent(
+        let buffer: Vec<u8> = dedent(
             r#"
-            module test {
-                namespace "A double quoted string";
-                description 'A single quoted string';
+             module test {
+                 namespace "A double quoted string";
+                 description 'A single quoted string';
 
-                revision 2018-12-03 {
-                    // I'm a comment!
-                }
+                 revision 2018-12-03 {
+                     // I'm a comment!
+                 }
 
-                number 0;
-                number 123;
-                number -123;
-                number 123.12345;
-                number -123.12345;
+                 number 0;
+                 number 123;
+                 number -123;
+                 number 123.12345;
+                 number -123.12345;
 
-                not-number 0123;
-                not-number abc123;
+                 not-number 0123;
+                 not-number abc123;
 
-                /* I'm a multi-line comment */
+                 /* I'm a multi-line comment */
 
-                /*
-                 * I'm a weird multi-line comment thingy
-                 */
-            }
-            "#,
-        ))
-        .unwrap();
+                 /*
+                  * I'm a weird multi-line comment thingy
+                  */
+             }
+             "#,
+        )
+        .bytes()
+        .collect();
+
+        let scanner = Scanner::new(&buffer);
+        let tokens: Vec<_> = scanner.iter().collect();
 
         assert_eq!(
-            result.human_readable_string(),
             dedent(
                 r#"
                 Other                0 -> 5          "module"
@@ -484,6 +494,7 @@ mod test {
                 ClosingCurlyBrace    390 -> 390      "}"
                 "#
             ),
+            tokens.human_readable_string(),
         );
     }
 }

@@ -9,3 +9,6 @@ edition = "2021"
 lazy_static = "1.4.0"
 pretty_assertions = "1.2.1"
 regex = "1.7.3"
+
+[profile.release]
+debug = true
