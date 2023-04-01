@@ -4,7 +4,7 @@
 
 use std::io::{stdout, Write};
 
-use yangparse::lexing::{HumanReadableTokensExt, Scanner};
+use yangparse::lexing::{scan, HumanReadableTokensExt};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -12,13 +12,9 @@ fn main() {
     let filepath = args.get(1).expect("Expected file path as first argument");
     let buffer = std::fs::read(filepath).expect("Failed to read input file");
 
-    // io::stdin().lock().read_to_end(&mut buffer).unwrap();
-
-    let scanner = Scanner::new(&buffer);
-
     let mut lock = stdout().lock();
 
-    for token in scanner.iter() {
+    for token in scan(&buffer) {
         write!(lock, "{}", token.human_readable_string()).expect("Failed to write to STDOUT");
     }
 }

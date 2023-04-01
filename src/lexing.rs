@@ -118,253 +118,231 @@ impl core::fmt::Display for TextPosition {
     }
 }
 
-pub struct Scanner<'a> {
-    /// The buffer that the file is read into. All strings in yielded tokens reference the memory
-    /// in this buffer, which prevents thousands of tiny allocations.
+pub struct ScanIterator<'a> {
     buffer: &'a Vec<u8>,
-
-    /// The current position in the source file, assuming we started at 0
-    cursor: std::cell::Cell<usize>,
+    cursor: usize,
 }
 
-impl Scanner<'_> {
-    pub fn new<'a>(buffer: &'a Vec<u8>) -> Scanner<'a> {
-        Scanner {
-            buffer,
-            cursor: 0.into(),
-        }
-    }
-
-    pub fn iter(&self) -> ScannerIterator {
-        ScannerIterator { scanner: self }
-    }
-
-    /// Reads the next token from the buffer, returns None on EOF
-    ///
-    /// Returns an error on lexer errors such as unterminated strings or comments.
-    ///
-    fn next_token(&self) -> Result<Option<Token>, String> {
-        self.skip_whitespace();
-
-        let char = match self.buffer.get(self.cursor.get()) {
-            Some(char) => char,
-            None => return Ok(None),
-        };
-
-        macro_rules! get_str {
-            ($length:expr) => {
-                str::from_utf8(
-                    self.buffer
-                        .get(self.cursor.get()..self.cursor.get() + $length)
-                        .unwrap(),
-                )
-                .map_err(|err| format!("{}", err))?
-            };
-        }
-
-        macro_rules! read_token {
-            ($token_type:expr, $length:expr) => {{
-                let token = Token {
-                    token_type: $token_type,
-                    span: (self.cursor.get(), self.cursor.get() + $length - 1),
-                    text: get_str!($length),
-                };
-
-                self.cursor.set(self.cursor.get() + $length);
-
-                Ok(Some(token))
-            }};
-        }
-
-        if *char == SEMICOLON {
-            return read_token!(TokenType::SemiColon, 1);
-        } else if *char == LEFT_CURLY_BRACKET {
-            return read_token!(TokenType::OpenCurlyBrace, 1);
-        } else if *char == RIGHT_CURLY_BRACKET {
-            return read_token!(TokenType::ClosingCurlyBrace, 1);
-        } else if let Some(string_length) = self.scan_string()? {
-            return read_token!(TokenType::String, string_length);
-        } else if let Some(comment_length) = self.scan_comment() {
-            return read_token!(TokenType::Comment, comment_length);
-        } else if let Some(comment_length) = self.scan_block_comment()? {
-            return read_token!(TokenType::Comment, comment_length);
-        } else if let Some(token_length) = self.scan_other() {
-            let str = get_str!(token_length);
-
-            if NUMBER_PATTERN.is_match(str) {
-                return read_token!(TokenType::Number, token_length);
-            } else if DATE_PATTERN.is_match(str) {
-                return read_token!(TokenType::Date, token_length);
-            } else {
-                return read_token!(TokenType::Other, token_length);
-            }
-        } else {
-            return Err(format!(
-                "Unexpected character at position {}: {:?}",
-                self.cursor.get(),
-                char
-            ));
-        }
-    }
-
-    fn scan_line_break(&self, start: usize) -> Option<usize> {
-        if let Some(first_char) = self.buffer.get(start) {
-            if *first_char == NEWLINE {
-                return Some(1);
-            } else if *first_char == CARRIAGE_RETURN // \r
-                && self
-                    .buffer
-                    .get(start + 1)
-                    .map_or(false, |next_char| *next_char == NEWLINE)
-            {
-                return Some(2);
-            }
-        }
-
-        None
-    }
-
-    /// Checks if there is a string at the current position
-    ///
-    /// Returns Ok(Some(string_length)) if there is a string at the current position, Ok(None) if
-    /// there isn't. Returns an error if the string is never terminated.
-    ///
-    fn scan_string(&self) -> Result<Option<usize>, String> {
-        let start = self.cursor.get();
-
-        let quote_char = match self.buffer[self.cursor.get()] {
-            DOUBLE_QUOTE => DOUBLE_QUOTE,
-            SINGLE_QUOTE => SINGLE_QUOTE,
-            _ => return Ok(None), // This position doesn't start a string, exit early
-        };
-
-        let mut prev_char: Option<&u8> = None;
-
-        let mut i = start + 1;
-
-        loop {
-            if let Some(char) = self.buffer.get(i) {
-                let prev_char_is_backslash = match prev_char {
-                    Some(x) => *x == BACKSLASH,
-                    None => false,
-                };
-
-                // If the string is closed, we're done!
-                if *char == quote_char && !prev_char_is_backslash {
-                    return Ok(Some(i + 1 - start));
-                }
-
-                prev_char = Some(char);
-            } else {
-                return Err(format!(
-                    "Unexpected end of input, string started at {} was never terminated",
-                    TextPosition::from_buffer_index(self.buffer, start),
-                ));
-            }
-
-            i += 1;
-        }
-    }
-
-    /// Checks if there is a single-line comment at the current position
-    fn scan_comment(&self) -> Option<usize> {
-        let start = self.cursor.get();
-
-        let is_forward_slash = |c: &u8| *c == SLASH;
-
-        if !(self.buffer.get(start).map_or(false, is_forward_slash)
-            && self.buffer.get(start + 1).map_or(false, is_forward_slash))
-        {
-            return None;
-        }
-
-        let mut length = 2;
-
-        for i in start + 2.. {
-            // Single-line comments last until the next line break or the end of the buffer
-            if self.scan_line_break(i).is_some() || i == self.buffer.len() {
-                break;
-            }
-
-            length += 1;
-        }
-
-        Some(length)
-    }
-
-    /// Checks if there is a block comment at the current position
-    fn scan_block_comment(&self) -> Result<Option<usize>, String> {
-        let start = self.cursor.get();
-
-        if !(self.buffer.get(start).map_or(false, |c| *c == SLASH)
-            && self.buffer.get(start + 1).map_or(false, |c| *c == ASTERISK))
-        {
-            return Ok(None);
-        }
-
-        let mut length = 4;
-
-        for i in start + 2.. {
-            if i == self.buffer.len() {
-                return Err(format!(
-                    "Unexpected end of input, block comment started at {} was never terminated",
-                    TextPosition::from_buffer_index(self.buffer, start)
-                ));
-            }
-
-            if self.buffer.get(i).map_or(false, |c| *c == ASTERISK)
-                && self.buffer.get(i + 1).map_or(false, |c| *c == SLASH)
-            {
-                break;
-            }
-
-            length += 1;
-        }
-
-        Ok(Some(length))
-    }
-
-    fn scan_other(&self) -> Option<usize> {
-        let start = self.cursor.get();
-        let mut i = start;
-
-        loop {
-            if let Some(char) = self.buffer.get(i) {
-                if is_delimiter(char) {
-                    break;
-                }
-            } else {
-                break; // End of input
-            }
-
-            i += 1;
-        }
-
-        return if i > start { Some(i - start) } else { None };
-    }
-
-    /// Reads until a non-whitespace character is found
-    fn skip_whitespace(&self) {
-        while let Some(char) = self.buffer.get(self.cursor.get()) {
-            if [SPACE, TAB, CARRIAGE_RETURN, NEWLINE].contains(char) {
-                self.cursor.set(self.cursor.get() + 1);
-            } else {
-                break;
-            }
-        }
-    }
-}
-
-pub struct ScannerIterator<'a> {
-    scanner: &'a Scanner<'a>,
-}
-
-impl<'a> Iterator for ScannerIterator<'a> {
+impl<'a> Iterator for ScanIterator<'a> {
     type Item = Token<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.scanner.next_token().unwrap()
+        match next_token(self.buffer, self.cursor).expect("Parse error") {
+            Some((next_cursor, token)) => {
+                self.cursor = next_cursor;
+                Some(token)
+            }
+            None => None,
+        }
     }
+}
+
+pub fn scan(buffer: &Vec<u8>) -> ScanIterator {
+    ScanIterator { buffer, cursor: 0 }
+}
+
+/// Reads the next token from the buffer and the next cursor position, returns None on EOF
+///
+/// Returns an error on lexer errors such as unterminated strings or comments.
+///
+fn next_token(buffer: &Vec<u8>, cursor: usize) -> Result<Option<(usize, Token)>, String> {
+    let cursor = skip_whitespace(buffer, cursor);
+
+    let char = match buffer.get(cursor) {
+        Some(char) => char,
+        None => return Ok(None),
+    };
+
+    macro_rules! get_str {
+        ($length:expr) => {
+            str::from_utf8(buffer.get(cursor..cursor + $length).unwrap())
+                .map_err(|err| format!("{}", err))?
+        };
+    }
+
+    macro_rules! read_token {
+        ($token_type:expr, $length:expr) => {{
+            let token = Token {
+                token_type: $token_type,
+                span: (cursor, cursor + $length - 1),
+                text: get_str!($length),
+            };
+
+            Ok(Some((cursor + $length, token)))
+        }};
+    }
+
+    if *char == SEMICOLON {
+        return read_token!(TokenType::SemiColon, 1);
+    } else if *char == LEFT_CURLY_BRACKET {
+        return read_token!(TokenType::OpenCurlyBrace, 1);
+    } else if *char == RIGHT_CURLY_BRACKET {
+        return read_token!(TokenType::ClosingCurlyBrace, 1);
+    } else if let Some(string_length) = scan_string(buffer, cursor)? {
+        return read_token!(TokenType::String, string_length);
+    } else if let Some(comment_length) = scan_comment(buffer, cursor) {
+        return read_token!(TokenType::Comment, comment_length);
+    } else if let Some(comment_length) = scan_block_comment(buffer, cursor)? {
+        return read_token!(TokenType::Comment, comment_length);
+    } else if let Some(token_length) = scan_other(buffer, cursor) {
+        let str = get_str!(token_length);
+
+        if NUMBER_PATTERN.is_match(str) {
+            return read_token!(TokenType::Number, token_length);
+        } else if DATE_PATTERN.is_match(str) {
+            return read_token!(TokenType::Date, token_length);
+        } else {
+            return read_token!(TokenType::Other, token_length);
+        }
+    } else {
+        return Err(format!(
+            "Unexpected character at position {}: {:?}",
+            cursor, char
+        ));
+    }
+}
+
+fn scan_line_break(buffer: &Vec<u8>, cursor: usize) -> Option<usize> {
+    if let Some(first_char) = buffer.get(cursor) {
+        if *first_char == NEWLINE {
+            return Some(1);
+        } else if *first_char == CARRIAGE_RETURN
+            && buffer
+                .get(cursor + 1)
+                .map_or(false, |next_char| *next_char == NEWLINE)
+        {
+            return Some(2);
+        }
+    }
+
+    None
+}
+
+/// Checks if there is a string at the current position
+///
+/// Returns Ok(Some(string_length)) if there is a string at the current position, Ok(None) if
+/// there isn't. Returns an error if the string is never terminated.
+///
+fn scan_string(buffer: &Vec<u8>, cursor: usize) -> Result<Option<usize>, String> {
+    let quote_char = match buffer[cursor] {
+        DOUBLE_QUOTE => DOUBLE_QUOTE,
+        SINGLE_QUOTE => SINGLE_QUOTE,
+        _ => return Ok(None), // This position doesn't start a string, exit early
+    };
+
+    let mut prev_char: Option<&u8> = None;
+
+    let mut i = cursor + 1;
+
+    loop {
+        if let Some(char) = buffer.get(i) {
+            let prev_char_is_backslash = match prev_char {
+                Some(x) => *x == BACKSLASH,
+                None => false,
+            };
+
+            // If the string is closed, we're done!
+            if *char == quote_char && !prev_char_is_backslash {
+                return Ok(Some(i + 1 - cursor));
+            }
+
+            prev_char = Some(char);
+        } else {
+            return Err(format!(
+                "Unexpected end of input, string started at {} was never terminated",
+                TextPosition::from_buffer_index(buffer, cursor),
+            ));
+        }
+
+        i += 1;
+    }
+}
+
+/// Checks if there is a single-line comment at the current position
+fn scan_comment(buffer: &Vec<u8>, cursor: usize) -> Option<usize> {
+    let is_forward_slash = |c: &u8| *c == SLASH;
+
+    if !(buffer.get(cursor).map_or(false, is_forward_slash)
+        && buffer.get(cursor + 1).map_or(false, is_forward_slash))
+    {
+        return None;
+    }
+
+    let mut length = 2;
+
+    for i in cursor + 2.. {
+        // Single-line comments last until the next line break or the end of the buffer
+        if scan_line_break(buffer, i).is_some() || i == buffer.len() {
+            break;
+        }
+
+        length += 1;
+    }
+
+    Some(length)
+}
+
+/// Checks if there is a block comment at the current position
+fn scan_block_comment(buffer: &Vec<u8>, cursor: usize) -> Result<Option<usize>, String> {
+    if !(buffer.get(cursor).map_or(false, |c| *c == SLASH)
+        && buffer.get(cursor + 1).map_or(false, |c| *c == ASTERISK))
+    {
+        return Ok(None);
+    }
+
+    let mut length = 4;
+
+    for i in cursor + 2.. {
+        if i == buffer.len() {
+            return Err(format!(
+                "Unexpected end of input, block comment started at {} was never terminated",
+                TextPosition::from_buffer_index(buffer, cursor)
+            ));
+        }
+
+        if buffer.get(i).map_or(false, |c| *c == ASTERISK)
+            && buffer.get(i + 1).map_or(false, |c| *c == SLASH)
+        {
+            break;
+        }
+
+        length += 1;
+    }
+
+    Ok(Some(length))
+}
+
+fn scan_other(buffer: &Vec<u8>, cursor: usize) -> Option<usize> {
+    let mut i = cursor;
+
+    loop {
+        if let Some(char) = buffer.get(i) {
+            if is_delimiter(char) {
+                break;
+            }
+        } else {
+            break; // End of input
+        }
+
+        i += 1;
+    }
+
+    return if i > cursor { Some(i - cursor) } else { None };
+}
+
+/// Reads until a non-whitespace character is found, returns the new cursor position
+fn skip_whitespace(buffer: &Vec<u8>, cursor: usize) -> usize {
+    let mut cursor = cursor;
+
+    while let Some(char) = buffer.get(cursor) {
+        if [SPACE, TAB, CARRIAGE_RETURN, NEWLINE].contains(char) {
+            cursor += 1;
+        } else {
+            break;
+        }
+    }
+
+    return cursor;
 }
 
 /// Returns true if this character should delimit a token
@@ -448,8 +426,7 @@ mod test {
         .bytes()
         .collect();
 
-        let scanner = Scanner::new(&buffer);
-        let tokens: Vec<_> = scanner.iter().collect();
+        let tokens: Vec<_> = scan(&buffer).collect();
 
         assert_eq!(
             dedent(
