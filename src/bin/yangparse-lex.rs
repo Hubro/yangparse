@@ -4,7 +4,7 @@
 
 use std::io::{stdout, Write};
 
-use yangparse::lexing::{scan, HumanReadableTokensExt};
+use yangparse::lexing::{scan, DebugTokenExt};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

@@ -55,11 +55,11 @@ pub struct Token<'a> {
     pub text: &'a str,
 }
 
-pub trait HumanReadableTokensExt {
+pub trait DebugTokenExt {
     fn human_readable_string(&self) -> String;
 }
 
-impl HumanReadableTokensExt for Token<'_> {
+impl DebugTokenExt for Token<'_> {
     /// Format the tokens into a nice, human readable string for troubleshooting purposes
     fn human_readable_string(&self) -> String {
         format!(
@@ -71,7 +71,7 @@ impl HumanReadableTokensExt for Token<'_> {
     }
 }
 
-impl HumanReadableTokensExt for Vec<Token<'_>> {
+impl DebugTokenExt for Vec<Token<'_>> {
     /// Format the tokens into a nice, human readable string for troubleshooting purposes
     fn human_readable_string(&self) -> String {
         let mut output = String::new();
