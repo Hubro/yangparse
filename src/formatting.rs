@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::fmt::{self, Display, Formatter};
 
 use crate::parsing::{Node, NodeValue, RootNode, StatementKeyword};
@@ -30,7 +29,7 @@ fn print_node(out: &mut Formatter, node: &Node, depth: u8) -> Result<(), fmt::Er
         };
     }
 
-    write!(out, "\n")?;
+    writeln!(out)?;
     indent!();
 
     match node {
@@ -44,12 +43,12 @@ fn print_node(out: &mut Formatter, node: &Node, depth: u8) -> Result<(), fmt::Er
             }
 
             for node in node.children.iter() {
-                print_node(out, &node, depth + 1)?;
+                print_node(out, node, depth + 1)?;
             }
 
             write!(out, ")")?;
         }
-        Node::CommentNode(node) => {
+        Node::CommentNode(_) => {
             write!(out, "(comment)")?;
         }
     }

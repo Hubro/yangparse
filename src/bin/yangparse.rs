@@ -1,6 +1,3 @@
-use std::fmt::Formatter;
-use std::io::{stdout, Write};
-
 use yangparse::parsing::parse;
 
 fn main() {

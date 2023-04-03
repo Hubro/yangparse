@@ -46,7 +46,7 @@ pub fn dedent(text: &str) -> String {
     loop {
         // Pop all leading empty lines
         if let Some(first_line) = lines.front() {
-            if *first_line == "" {
+            if first_line.is_empty() {
                 lines.pop_front();
                 continue;
             }
@@ -54,7 +54,7 @@ pub fn dedent(text: &str) -> String {
 
         // Pop all trailing empty lines
         if let Some(last_line) = lines.back() {
-            if *last_line == "" {
+            if last_line.is_empty() {
                 lines.pop_back();
                 continue;
             }
@@ -63,5 +63,5 @@ pub fn dedent(text: &str) -> String {
         break;
     }
 
-    return format!("{}\n", Vec::from(lines).join("\n"));
+    format!("{}\n", Vec::from(lines).join("\n"))
 }
