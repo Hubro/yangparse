@@ -131,6 +131,8 @@ fn parse_statements(tokens: &mut crate::lexing::ScanIterator) -> Result<Vec<Node
                         // From a clean state, we expect to find a statement keyword, a comment or
                         // a closing curly brace
                         match token.token_type {
+                            TokenType::WhiteSpace => continue,
+                            TokenType::LineBreak => continue,
                             TokenType::Comment => {
                                 statements.push(Node::CommentNode(token.text.to_string()))
                             }
@@ -144,6 +146,9 @@ fn parse_statements(tokens: &mut crate::lexing::ScanIterator) -> Result<Vec<Node
 
                     ParseState::GotKeyword(keyword) => {
                         match token.token_type {
+                            TokenType::WhiteSpace => state = ParseState::GotKeyword(keyword),
+                            TokenType::LineBreak => state = ParseState::GotKeyword(keyword),
+
                             TokenType::OpenCurlyBrace => {
                                 // Recurse!
                                 statements.push(Node::BlockNode(BlockNode {
@@ -167,6 +172,9 @@ fn parse_statements(tokens: &mut crate::lexing::ScanIterator) -> Result<Vec<Node
 
                     ParseState::GotValue(keyword, value) => {
                         match token.token_type {
+                            TokenType::WhiteSpace => state = ParseState::GotValue(keyword, value),
+                            TokenType::LineBreak => state = ParseState::GotValue(keyword, value),
+
                             TokenType::OpenCurlyBrace => {
                                 // Recurse!
                                 statements.push(Node::BlockNode(BlockNode {
@@ -201,5 +209,67 @@ fn parse_statements(tokens: &mut crate::lexing::ScanIterator) -> Result<Vec<Node
                 _ => return Err("Unexpected end of input".to_string()),
             },
         };
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    fn dedent(text: &str) -> String {
+        let mut text = textwrap::dedent(text).trim().to_string();
+        text.push('\n');
+        text
+    }
+
+    #[test]
+    fn smoke_test() {
+        let buffer: Vec<u8> = dedent(
+            r#"
+             /*
+              * This is a block comment
+              */
+
+             module test {
+                 yang-version 1;
+                 namespace "https://github.com/Hubro/yangparse";
+                 description 'A small smoke test to make sure basic lexing works';
+
+                 revision 2018-12-03 {
+                     // I'm a comment!
+                     description
+                       "A multi-line string starting in an indented line
+
+                        This is an idiomatic way to format large strings
+                        in YANG models";
+                 }
+
+                 number 12.34;
+             }
+             "#,
+        )
+        .bytes()
+        .collect();
+
+        let tree = parse(&buffer).expect("Failed to parse YANG");
+
+        assert_eq!(
+            dedent(
+                r#"
+                (root
+                  (comment)
+                  (Keyword "module" Other
+                    (Keyword "yang-version" Number)
+                    (Keyword "namespace" String)
+                    (Keyword "description" String)
+                    (Keyword "revision" Date
+                      (comment)
+                      (Keyword "description" String))
+                    (INVALID "number" Number)))
+                "#
+            ),
+            tree.to_string()
+        );
     }
 }

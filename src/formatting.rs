@@ -15,7 +15,7 @@ pub fn print_tree(out: &mut Formatter, root: &RootNode) -> Result<(), fmt::Error
         print_node(out, node, 1)?;
     }
 
-    write!(out, ")")?;
+    writeln!(out, ")")?;
 
     Ok(())
 }
