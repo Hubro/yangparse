@@ -111,7 +111,7 @@ impl From<Token<'_>> for NodeValue {
 /// invalid YANG. For example, this function will parse a document with multiple module blocks just
 /// fine, or no module node at all, just a bunch of leafs.
 ///
-pub fn parse(buffer: &Vec<u8>) -> Result<RootNode, String> {
+pub fn parse(buffer: &[u8]) -> Result<RootNode, String> {
     let mut tokens = crate::lexing::scan(buffer);
 
     Ok(RootNode {

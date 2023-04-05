@@ -119,7 +119,7 @@ impl core::fmt::Display for TextPosition {
 }
 
 pub struct ScanIterator<'a> {
-    buffer: &'a Vec<u8>,
+    buffer: &'a [u8],
     cursor: usize,
 }
 
@@ -137,7 +137,7 @@ impl<'a> Iterator for ScanIterator<'a> {
     }
 }
 
-pub fn scan(buffer: &Vec<u8>) -> ScanIterator {
+pub fn scan(buffer: &[u8]) -> ScanIterator {
     ScanIterator { buffer, cursor: 0 }
 }
 
@@ -262,7 +262,7 @@ fn scan_string(buffer: &[u8], cursor: usize) -> Result<Option<usize>, String> {
 }
 
 /// Checks if there is a single-line comment at the current position
-fn scan_comment(buffer: &Vec<u8>, cursor: usize) -> Option<usize> {
+fn scan_comment(buffer: &[u8], cursor: usize) -> Option<usize> {
     let is_forward_slash = |c: &u8| *c == SLASH;
 
     if !(buffer.get(cursor).map_or(false, is_forward_slash)
@@ -286,7 +286,7 @@ fn scan_comment(buffer: &Vec<u8>, cursor: usize) -> Option<usize> {
 }
 
 /// Checks if there is a block comment at the current position
-fn scan_block_comment(buffer: &Vec<u8>, cursor: usize) -> Result<Option<usize>, String> {
+fn scan_block_comment(buffer: &[u8], cursor: usize) -> Result<Option<usize>, String> {
     if !(buffer.get(cursor).map_or(false, |c| *c == SLASH)
         && buffer.get(cursor + 1).map_or(false, |c| *c == ASTERISK))
     {
