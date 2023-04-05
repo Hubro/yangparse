@@ -45,6 +45,8 @@ pub enum TokenType {
     OpenCurlyBrace,
     ClosingCurlyBrace,
     SemiColon,
+    WhiteSpace,
+    LineBreak,
     Other,
 }
 
@@ -148,9 +150,7 @@ pub fn scan(buffer: &[u8]) -> ScanIterator {
 ///
 /// Returns an error on lexer errors such as unterminated strings or comments.
 ///
-fn next_token(buffer: &Vec<u8>, cursor: usize) -> Result<Option<(usize, Token)>, String> {
-    let cursor = skip_whitespace(buffer, cursor);
-
+fn next_token(buffer: &[u8], cursor: usize) -> Result<Option<(usize, Token)>, String> {
     let char = match buffer.get(cursor) {
         Some(char) => char,
         None => return Ok(None),
@@ -181,6 +181,10 @@ fn next_token(buffer: &Vec<u8>, cursor: usize) -> Result<Option<(usize, Token)>,
         read_token!(TokenType::OpenCurlyBrace, 1)
     } else if *char == RIGHT_CURLY_BRACKET {
         read_token!(TokenType::ClosingCurlyBrace, 1)
+    } else if let Some(whitespace_length) = scan_whitespace(buffer, cursor) {
+        read_token!(TokenType::WhiteSpace, whitespace_length)
+    } else if let Some(line_break_length) = scan_line_break(buffer, cursor) {
+        read_token!(TokenType::LineBreak, line_break_length)
     } else if let Some(string_length) = scan_string(buffer, cursor)? {
         read_token!(TokenType::String, string_length)
     } else if let Some(comment_length) = scan_comment(buffer, cursor) {
@@ -200,25 +204,9 @@ fn next_token(buffer: &Vec<u8>, cursor: usize) -> Result<Option<(usize, Token)>,
     } else {
         Err(format!(
             "Unexpected character at position {}: {:?}",
-            cursor, char
+            cursor, *char as char,
         ))
     }
-}
-
-fn scan_line_break(buffer: &[u8], cursor: usize) -> Option<usize> {
-    if let Some(first_char) = buffer.get(cursor) {
-        if *first_char == NEWLINE {
-            return Some(1);
-        } else if *first_char == CARRIAGE_RETURN
-            && buffer
-                .get(cursor + 1)
-                .map_or(false, |next_char| *next_char == NEWLINE)
-        {
-            return Some(2);
-        }
-    }
-
-    None
 }
 
 /// Checks if there is a string at the current position
@@ -315,6 +303,37 @@ fn scan_block_comment(buffer: &[u8], cursor: usize) -> Result<Option<usize>, Str
     Ok(Some(length))
 }
 
+/// Checks if there is whitespace at the current position
+fn scan_whitespace(buffer: &[u8], cursor: usize) -> Option<usize> {
+    for i in cursor.. {
+        if buffer
+            .get(i)
+            .map_or(false, |char| [SPACE, TAB].contains(char))
+        {
+            continue;
+        } else {
+            let len = i - cursor;
+
+            return if len > 0 { Some(len) } else { None };
+        }
+    }
+
+    None
+}
+
+/// Checks if there is a line break at this position
+fn scan_line_break(buffer: &[u8], cursor: usize) -> Option<usize> {
+    if buffer.get(cursor).map_or(false, |c| *c == b'\n') {
+        Some(1)
+    } else if buffer.get(cursor).map_or(false, |c| *c == b'\r')
+        && buffer.get(cursor).map_or(false, |c| *c == b'\n')
+    {
+        Some(2)
+    } else {
+        None
+    }
+}
+
 fn scan_other(buffer: &[u8], cursor: usize) -> Option<usize> {
     let mut i = cursor;
 
@@ -403,31 +422,28 @@ mod test {
     }
 
     #[test]
-    fn test_scan() {
+    fn smoke_test() {
         let buffer: Vec<u8> = dedent(
             r#"
+             /*
+              * This is a block comment
+              */
+
              module test {
-                 namespace "A double quoted string";
-                 description 'A single quoted string';
+                 yang-version 1;
+                 namespace "https://github.com/Hubro/yangparse";
+                 description 'A small smoke test to make sure basic lexing works';
 
                  revision 2018-12-03 {
                      // I'm a comment!
+                     description
+                       "A multi-line string starting in an indented line
+
+                        This is an idiomatic way to format large strings
+                        in YANG models";
                  }
 
-                 number 0;
-                 number 123;
-                 number -123;
-                 number 123.12345;
-                 number -123.12345;
-
-                 not-number 0123;
-                 not-number abc123;
-
-                 /* I'm a multi-line comment */
-
-                 /*
-                  * I'm a weird multi-line comment thingy
-                  */
+                 number 12.34;
              }
              "#,
         )
@@ -439,44 +455,63 @@ mod test {
         assert_eq!(
             dedent(
                 r#"
-                Other                0 -> 5          "module"
-                Other                7 -> 10         "test"
-                OpenCurlyBrace       12 -> 12        "{"
-                Other                18 -> 26        "namespace"
-                String               28 -> 51        "\"A double quoted string\""
-                SemiColon            52 -> 52        ";"
-                Other                58 -> 68        "description"
-                String               70 -> 93        "'A single quoted string'"
-                SemiColon            94 -> 94        ";"
-                Other                101 -> 108      "revision"
-                Date                 110 -> 119      "2018-12-03"
-                OpenCurlyBrace       121 -> 121      "{"
-                Comment              131 -> 147      "// I'm a comment!"
-                ClosingCurlyBrace    153 -> 153      "}"
-                Other                160 -> 165      "number"
-                Number               167 -> 167      "0"
-                SemiColon            168 -> 168      ";"
-                Other                174 -> 179      "number"
-                Number               181 -> 183      "123"
-                SemiColon            184 -> 184      ";"
-                Other                190 -> 195      "number"
-                Number               197 -> 200      "-123"
-                SemiColon            201 -> 201      ";"
-                Other                207 -> 212      "number"
-                Number               214 -> 222      "123.12345"
-                SemiColon            223 -> 223      ";"
-                Other                229 -> 234      "number"
-                Number               236 -> 245      "-123.12345"
-                SemiColon            246 -> 246      ";"
-                Other                253 -> 262      "not-number"
-                Other                264 -> 267      "0123"
-                SemiColon            268 -> 268      ";"
-                Other                274 -> 283      "not-number"
-                Other                285 -> 290      "abc123"
-                SemiColon            291 -> 291      ";"
-                Comment              298 -> 327      "/* I'm a multi-line comment */"
-                Comment              334 -> 388      "/*\n     * I'm a weird multi-line comment thingy\n     */"
-                ClosingCurlyBrace    390 -> 390      "}"
+                Comment              0 -> 32         "/*\n * This is a block comment\n */"
+                LineBreak            33 -> 33        "\n"
+                LineBreak            34 -> 34        "\n"
+                Other                35 -> 40        "module"
+                WhiteSpace           41 -> 41        " "
+                Other                42 -> 45        "test"
+                WhiteSpace           46 -> 46        " "
+                OpenCurlyBrace       47 -> 47        "{"
+                LineBreak            48 -> 48        "\n"
+                WhiteSpace           49 -> 52        "    "
+                Other                53 -> 64        "yang-version"
+                WhiteSpace           65 -> 65        " "
+                Number               66 -> 66        "1"
+                SemiColon            67 -> 67        ";"
+                LineBreak            68 -> 68        "\n"
+                WhiteSpace           69 -> 72        "    "
+                Other                73 -> 81        "namespace"
+                WhiteSpace           82 -> 82        " "
+                String               83 -> 118       "\"https://github.com/Hubro/yangparse\""
+                SemiColon            119 -> 119      ";"
+                LineBreak            120 -> 120      "\n"
+                WhiteSpace           121 -> 124      "    "
+                Other                125 -> 135      "description"
+                WhiteSpace           136 -> 136      " "
+                String               137 -> 188      "'A small smoke test to make sure basic lexing works'"
+                SemiColon            189 -> 189      ";"
+                LineBreak            190 -> 190      "\n"
+                LineBreak            191 -> 191      "\n"
+                WhiteSpace           192 -> 195      "    "
+                Other                196 -> 203      "revision"
+                WhiteSpace           204 -> 204      " "
+                Date                 205 -> 214      "2018-12-03"
+                WhiteSpace           215 -> 215      " "
+                OpenCurlyBrace       216 -> 216      "{"
+                LineBreak            217 -> 217      "\n"
+                WhiteSpace           218 -> 225      "        "
+                Comment              226 -> 242      "// I'm a comment!"
+                LineBreak            243 -> 243      "\n"
+                WhiteSpace           244 -> 251      "        "
+                Other                252 -> 262      "description"
+                LineBreak            263 -> 263      "\n"
+                WhiteSpace           264 -> 273      "          "
+                String               274 -> 410      "\"A multi-line string starting in an indented line\n\n           This is an idiomatic way to format large strings\n           in YANG models\""
+                SemiColon            411 -> 411      ";"
+                LineBreak            412 -> 412      "\n"
+                WhiteSpace           413 -> 416      "    "
+                ClosingCurlyBrace    417 -> 417      "}"
+                LineBreak            418 -> 418      "\n"
+                LineBreak            419 -> 419      "\n"
+                WhiteSpace           420 -> 423      "    "
+                Other                424 -> 429      "number"
+                WhiteSpace           430 -> 430      " "
+                Number               431 -> 435      "12.34"
+                SemiColon            436 -> 436      ";"
+                LineBreak            437 -> 437      "\n"
+                ClosingCurlyBrace    438 -> 438      "}"
+                LineBreak            439 -> 439      "\n"
                 "#
             ),
             tokens.human_readable_string(),
