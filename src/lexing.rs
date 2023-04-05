@@ -394,8 +394,13 @@ fn is_delimiter(c: &u8) -> bool {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::util::dedent;
     use pretty_assertions::assert_eq;
+
+    fn dedent(text: &str) -> String {
+        let mut text = textwrap::dedent(text).trim().to_string();
+        text.push('\n');
+        text
+    }
 
     #[test]
     fn test_scan() {
